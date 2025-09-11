@@ -1,0 +1,35 @@
+---
+- name: Create Kubernetes VMs in Multipass
+  hosts: localhost
+  connection: local
+  vars:
+    ssh_pub_key: "{{ lookup('file', lookup('env','HOME') + '/.ssh/id_rsa.pub') }}"
+  tasks:
+    - name: Launch master node
+      command: multipass launch 22.04 --name k8s-master --cpus 2 --mem 4G --disk 20G
+      args:
+        creates: /var/snap/multipass/common/data/multipassd/vault/instances/k8s-master
+
+    - name: Launch worker1 node
+      command: multipass launch 22.04 --name k8s-worker1 --cpus 2 --mem 2G --disk 15G
+      args:
+        creates: /var/snap/multipass/common/data/multipassd/vault/instances/k8s-worker1
+
+    - name: Launch worker2 node
+      command: multipass launch 22.04 --name k8s-worker2 --cpus 2 --mem 2G --disk 15G
+      args:
+        creates: /var/snap/multipass/common/data/multipassd/vault/instances/k8s-worker2
+
+    - name: Get IPs of all nodes
+      command: multipass list --format csv
+      register: multipass_list
+
+    - name: Add SSH key to master
+      command: multipass exec k8s-master -- bash -c "echo '{{ ssh_pub_key }}' >> /home/ubuntu/.ssh/authorized_keys"
+
+    - name: Add SSH key to worker1
+      command: multipass exec k8s-worker1 -- bash -c "echo '{{ ssh_pub_key }}' >> /home/ubuntu/.ssh/authorized_keys"
+
+    - name: Add SSH key to worker2
+      command: multipass exec k8s-worker2 -- bash -c "echo '{{ ssh_pub_key }}' >> /home/ubuntu/.ssh/authorized_keys"
+
