@@ -445,6 +445,15 @@
           - Run Salt states: ./manage_salt_vms.sh apply-states
           - Manage VMs: ./manage_salt_vms.sh {start|stop|status}
 
+          💡 Running Salt commands without sudo:
+          After SSH'ing to salt-master, you can run Salt commands directly:
+          - salt '*' test.ping
+          - salt-key -L
+          - salt '*' cmd.run 'uptime'
+          
+          Note: Commands work via sudoers rule with shell aliases.
+          No need to run 'newgrp' or logout/login.
+
           {% if salt_test.rc == 0 %}
           ✅ Salt connectivity test: PASSED
           {{ salt_test.stdout }}
