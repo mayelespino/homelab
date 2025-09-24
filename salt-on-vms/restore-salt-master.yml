@@ -1,0 +1,174 @@
+---
+- name: Restore Salt Master from Local Backup
+  hosts: new_salt_master
+  become: yes
+  vars:
+    local_backup_dir: "./backups/{{ source_hostname | default(inventory_hostname) }}/{{ backup_date }}"
+    remote_temp_dir: "/tmp/salt-restore-{{ ansible_date_time.epoch }}"
+  vars_prompt:
+    - name: "backup_date"
+      prompt: "Enter backup date (YYYY-MM-DD)"
+      private: no
+    - name: "source_hostname"
+      prompt: "Enter source hostname (or press Enter to use current hostname)"
+      private: no
+      default: "{{ inventory_hostname }}"
+  
+  pre_tasks:
+    - name: Check if local backup directory exists
+      stat:
+        path: "{{ local_backup_dir }}"
+      delegate_to: localhost
+      become: no
+      register: backup_dir_check
+
+    - name: Fail if backup directory doesn't exist
+      fail:
+        msg: "Backup directory {{ local_backup_dir }} not found!"
+      when: not backup_dir_check.stat.exists
+
+    - name: List available backup files
+      find:
+        paths: "{{ local_backup_dir }}"
+        patterns: "*.tar.gz"
+      delegate_to: localhost
+      become: no
+      register: available_backups
+
+    - name: Show backup manifest if available
+      slurp:
+        src: "{{ local_backup_dir }}/backup-manifest.txt"
+      delegate_to: localhost
+      become: no
+      register: manifest
+      ignore_errors: yes
+
+    - name: Display backup information
+      debug:
+        msg: |
+          Restoring from: {{ local_backup_dir }}
+          Available backup files: {{ available_backups.files | map(attribute='path') | map('basename') | list }}
+          {% if manifest.content is defined %}
+          Manifest:
+          {{ manifest.content | b64decode }}
+          {% endif %}
+
+  tasks:
+    - name: Install Salt Master
+      package:
+        name: salt-master
+        state: present
+
+    - name: Stop Salt Master service
+      service:
+        name: salt-master
+        state: stopped
+
+    - name: Create temporary restore directory on remote
+      file:
+        path: "{{ remote_temp_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Upload backup files to remote temp directory
+      copy:
+        src: "{{ item.path }}"
+        dest: "{{ remote_temp_dir }}/{{ item.path | basename }}"
+        mode: '0644'
+      loop: "{{ available_backups.files }}"
+
+    - name: Check if salt-config backup exists
+      stat:
+        path: "{{ remote_temp_dir }}/salt-config.tar.gz"
+      register: config_backup
+
+    - name: Restore Salt configuration
+      unarchive:
+        src: "{{ remote_temp_dir }}/salt-config.tar.gz"
+        dest: /
+        remote_src: yes
+        owner: root
+        group: root
+      when: config_backup.stat.exists
+
+    - name: Check if PKI backup exists
+      stat:
+        path: "{{ remote_temp_dir }}/pki-backup.tar.gz"
+      register: pki_backup
+
+    - name: Restore PKI keys
+      unarchive:
+        src: "{{ remote_temp_dir }}/pki-backup.tar.gz"
+        dest: /
+        remote_src: yes
+        owner: salt
+        group: salt
+        mode: '0700'
+      when: pki_backup.stat.exists
+
+    - name: Check if salt-data backup exists
+      stat:
+        path: "{{ remote_temp_dir }}/salt-data.tar.gz"
+      register: data_backup
+
+    - name: Restore Salt states and pillar data
+      unarchive:
+        src: "{{ remote_temp_dir }}/salt-data.tar.gz"
+        dest: /
+        remote_src: yes
+        owner: root
+        group: root
+      when: data_backup.stat.exists
+
+    - name: Set correct permissions on Salt directories
+      file:
+        path: "{{ item.path }}"
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+        state: directory
+        recurse: yes
+      loop:
+        - { path: "/etc/salt/pki/master", owner: "salt", group: "salt", mode: "0700" }
+        - { path: "/srv/salt", owner: "root", group: "root", mode: "0755" }
+        - { path: "/srv/pillar", owner: "root", group: "root", mode: "0755" }
+      ignore_errors: yes
+
+    - name: Start and enable Salt Master service
+      service:
+        name: salt-master
+        state: started
+        enabled: yes
+
+    - name: Wait for Salt Master to be ready
+      wait_for:
+        port: 4505
+        host: "{{ ansible_default_ipv4.address }}"
+        delay: 5
+        timeout: 60
+
+    - name: Verify Salt Master is responding
+      command: salt-run manage.status
+      register: salt_status
+      retries: 3
+      delay: 10
+      until: salt_status.rc == 0
+
+    - name: Clean up temporary restore files
+      file:
+        path: "{{ remote_temp_dir }}"
+        state: absent
+
+    - name: Display restoration results
+      debug:
+        msg: |
+          Salt Master restoration completed successfully!
+          
+          Service Status: {{ ansible_facts.services['salt-master'].state }}
+          Salt Master Response: {{ 'OK' if salt_status.rc == 0 else 'FAILED' }}
+          
+          Next steps:
+          1. Verify minions can connect: salt-run manage.status
+          2. Test a simple command: salt '*' test.ping
+          3. Check master logs: journalctl -u salt-master -f
+

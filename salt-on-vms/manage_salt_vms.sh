@@ -1,7 +1,7 @@
 #!/bin/bash
 # Salt Stack Environment Management Script
 
-SALT_MASTER_IP="10.227.210.139"
+SALT_MASTER_IP="10.153.17.123"
 SSH_KEY="/home/mayel/.ssh/multipass_key"
 
 case "$1" in

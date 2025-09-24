@@ -1,0 +1,136 @@
+---
+- name: Provision Salt Master and Minions with Multipass and configure SaltStack
+  hosts: localhost
+  gather_facts: false
+  vars:
+    salt_master_name: salt-master
+    salt_minion_names:
+      - salt-minion1
+      - salt-minion2
+      - salt-minion3
+    vm_image: "22.04"
+    vm_memory: "1G"
+    vm_cpus: 1
+    vm_disk: "10G"
+    salt_user: ubuntu
+
+  tasks:
+    - name: Ensure Salt Master VM exists
+      ansible.builtin.command: >
+        multipass info {{ salt_master_name }}
+      register: master_info
+      ignore_errors: yes
+      failed_when: false
+
+    - name: Launch Salt Master VM if not present
+      ansible.builtin.command: >
+        multipass launch {{ vm_image }} -n {{ salt_master_name }} -m {{ vm_memory }} -c {{ vm_cpus }} -d {{ vm_disk }}
+      when: master_info.rc != 0
+
+    - name: Gather Minion Info
+      ansible.builtin.command: multipass info {{ item }}
+      loop: "{{ salt_minion_names }}"
+      register: minion_infos
+      ignore_errors: yes
+      failed_when: false
+
+    - name: Set fact for missing minions
+      ansible.builtin.set_fact:
+        missing_minions: >-
+          {{
+            salt_minion_names | zip(minion_infos.results)
+            | selectattr('1', 'defined')
+            | selectattr('1.rc', '!=', 0)
+            | map('first') | list
+          }}
+
+    - name: Launch Salt Minion VMs if not present
+      ansible.builtin.command: >
+        multipass launch {{ vm_image }} -n {{ item }} -m {{ vm_memory }} -c {{ vm_cpus }} -d {{ vm_disk }}
+      loop: "{{ missing_minions }}"
+
+    - name: Wait for salt-master VM info to be available and contain the correct key
+      ansible.builtin.command: "multipass info {{ salt_master_name }} --format json"
+      register: master_info_json
+      retries: 10
+      delay: 3
+      until: master_info_json.stdout is not none and
+             (master_info_json.stdout | from_json).info is defined and
+             (master_info_json.stdout | from_json).info[salt_master_name] is defined
+      changed_when: false
+
+    - name: Set Salt Master IP fact
+      ansible.builtin.set_fact:
+        salt_master_ip: "{{ (master_info_json.stdout | from_json).info[salt_master_name]['ipv4'][0] }}"
+
+    - name: Install Salt Master and Minion from Ubuntu repositories on master
+      ansible.builtin.shell: |
+        multipass exec {{ salt_master_name }} -- bash -c "
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository universe -y
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates apt-transport-https
+          sudo apt-get install -y salt-master salt-minion
+        "
+      changed_when: false
+
+    - name: Install Salt Minion from Ubuntu repositories on minions
+      ansible.builtin.shell: |
+        multipass exec {{ item }} -- bash -c "
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository universe -y
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates apt-transport-https
+          sudo apt-get install -y salt-minion
+        "
+      loop: "{{ salt_minion_names }}"
+      changed_when: false
+
+    - name: Configure Salt Master to listen on all interfaces
+      ansible.builtin.shell: |
+        multipass exec {{ salt_master_name }} -- bash -c "
+          sudo sed -i 's/#interface: 0.0.0.0/interface: 0.0.0.0/' /etc/salt/master &&
+          sudo systemctl restart salt-master
+        "
+      changed_when: false
+
+    - name: Configure Salt Minions to connect to Master
+      ansible.builtin.shell: |
+        multipass exec {{ item }} -- bash -c "
+          echo 'master: {{ salt_master_ip }}' | sudo tee /etc/salt/minion.d/master.conf &&
+          sudo systemctl restart salt-minion
+        "
+      loop: "{{ salt_minion_names }}"
+      changed_when: false
+
+    - name: Ensure 'salt' group exists on all VMs
+      ansible.builtin.shell: |
+        multipass exec {{ item }} -- sudo groupadd -f salt
+      loop: "{{ [salt_master_name] + salt_minion_names }}"
+      changed_when: false
+
+    - name: Add ubuntu user to salt group for passwordless salt
+      ansible.builtin.shell: |
+        multipass exec {{ item }} -- sudo usermod -aG salt {{ salt_user }}
+      loop: "{{ [salt_master_name] + salt_minion_names }}"
+      changed_when: false
+
+    - name: Ensure salt binary is group executable
+      ansible.builtin.shell: |
+        multipass exec {{ item }} -- sudo chmod g+xs /usr/bin/salt /usr/bin/salt-call || true
+      loop: "{{ [salt_master_name] + salt_minion_names }}"
+      changed_when: false
+
+    - name: Accept all pending minion keys on master
+      ansible.builtin.shell: |
+        multipass exec {{ salt_master_name }} -- sudo salt-key -A -y
+      changed_when: false
+
+    - name: Print instructions for using salt
+      ansible.builtin.debug:
+        msg: |
+          Salt master and minions are provisioned and minion keys accepted.
+          You can now test connectivity with:
+          multipass exec {{ salt_master_name }} -- salt '*' test.ping

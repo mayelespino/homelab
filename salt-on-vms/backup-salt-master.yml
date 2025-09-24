@@ -1,0 +1,121 @@
+---
+- name: Backup Salt Master to Local Machine
+  hosts: salt_masters
+  become: yes
+  vars:
+    local_backup_dir: "./backups/{{ inventory_hostname }}/{{ ansible_date_time.date }}"
+    remote_temp_dir: "/tmp/salt-backup-{{ ansible_date_time.epoch }}"
+  tasks:
+    - name: Create local backup directory
+      file:
+        path: "{{ local_backup_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      become: no
+
+    - name: Create temporary backup directory on remote
+      file:
+        path: "{{ remote_temp_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Check if Salt configuration exists
+      stat:
+        path: /etc/salt/master
+      register: salt_config
+
+    - name: Backup Salt configuration to temp
+      archive:
+        path:
+          - /etc/salt/master
+          - /etc/salt/master.d/
+        dest: "{{ remote_temp_dir }}/salt-config.tar.gz"
+        mode: '0644'
+      when: salt_config.stat.exists
+
+    - name: Check if PKI directory exists
+      stat:
+        path: /etc/salt/pki/master/
+      register: pki_dir
+
+    - name: Backup PKI keys to temp
+      archive:
+        path: /etc/salt/pki/master/
+        dest: "{{ remote_temp_dir }}/pki-backup.tar.gz"
+        mode: '0600'
+      when: pki_dir.stat.exists
+
+    - name: Check if Salt states directory exists
+      stat:
+        path: /srv/salt/
+      register: salt_states
+
+    - name: Check if Pillar directory exists  
+      stat:
+        path: /srv/pillar/
+      register: pillar_dir
+
+    - name: Create empty directories for missing salt/pillar data
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /tmp/empty-salt
+        - /tmp/empty-pillar
+      when: not salt_states.stat.exists and not pillar_dir.stat.exists
+
+    - name: Backup Salt states and pillar to temp
+      archive:
+        path:
+          - "{{ '/srv/salt/' if salt_states.stat.exists else '/tmp/empty-salt' }}"
+          - "{{ '/srv/pillar/' if pillar_dir.stat.exists else '/tmp/empty-pillar' }}"
+        dest: "{{ remote_temp_dir }}/salt-data.tar.gz"
+        mode: '0644'
+
+    - name: Find all backup files in temp directory
+      find:
+        paths: "{{ remote_temp_dir }}"
+        patterns: "*.tar.gz"
+      register: backup_files
+
+    - name: Fetch backup files to local machine
+      fetch:
+        src: "{{ item.path }}"
+        dest: "{{ local_backup_dir }}/{{ item.path | basename }}"
+        flat: yes
+      loop: "{{ backup_files.files }}"
+      become: no
+
+    - name: Create backup manifest
+      copy:
+        content: |
+          Salt Master Backup - {{ ansible_date_time.iso8601 }}
+          Host: {{ inventory_hostname }} ({{ ansible_host }})
+          Backup Contents:
+          {% for file in backup_files.files %}
+          - {{ file.path | basename }} ({{ (file.size / 1024) | round(2) }} KB)
+          {% endfor %}
+          
+          Salt Config Exists: {{ salt_config.stat.exists }}
+          PKI Directory Exists: {{ pki_dir.stat.exists }}
+          Salt States Exist: {{ salt_states.stat.exists }}
+          Pillar Data Exists: {{ pillar_dir.stat.exists }}
+        dest: "{{ local_backup_dir }}/backup-manifest.txt"
+      delegate_to: localhost
+      become: no
+
+    - name: Clean up temporary files on remote
+      file:
+        path: "{{ remote_temp_dir }}"
+        state: absent
+
+    - name: Show local backup location
+      debug:
+        msg: |
+          Backup completed successfully!
+          Local backup directory: {{ local_backup_dir }}
+          Files backed up: {{ backup_files.files | length }}
+      delegate_to: localhost
+
