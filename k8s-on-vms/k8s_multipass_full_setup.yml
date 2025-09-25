@@ -1,21 +1,75 @@
 ---
-# Kubernetes Cluster Setup Playbook
-# This playbook sets up a complete Kubernetes cluster with 1 master and 3 worker nodes
+- name: Provision Kubernetes Cluster VMs with Multipass and setup SSH
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    cluster_name: "{{ cluster_name | default('k8scluster') }}"
+    ssh_pub_key: "{{ lookup('file', lookup('env','HOME') + '/.ssh/id_rsa.pub') }}"
+    multipass_instances:
+      - { name: "{{ cluster_name }}-master", cpus: 2, mem: 4G, disk: 20G }
+      - { name: "{{ cluster_name }}-worker1", cpus: 2, mem: 2G, disk: 15G }
+      - { name: "{{ cluster_name }}-worker2", cpus: 2, mem: 2G, disk: 15G }
+      - { name: "{{ cluster_name }}-worker3", cpus: 2, mem: 2G, disk: 15G }
+    inventory_file: "./{{ cluster_name }}_inventory.ini"
+  tasks:
+    - name: Launch Multipass VMs
+      command: multipass launch 22.04 --name {{ item.name }} --cpus {{ item.cpus }} --mem {{ item.mem }} --disk {{ item.disk }}
+      args:
+        creates: "/var/snap/multipass/common/data/multipassd/vault/instances/{{ item.name }}"
+      loop: "{{ multipass_instances }}"
+
+    - name: Get IPs of all nodes
+      command: multipass list --format csv
+      register: multipass_list
+
+    - name: Parse Multipass IPs for dynamic inventory
+      set_fact:
+        multipass_ips: >-
+          {{
+            dict(
+              multipass_list.stdout_lines[1:]
+              | map('split', ',')
+              | select('length', '>', 3)
+              | map('extract', [0, 2])
+            )
+          }}
+
+    - name: Add SSH key to all VMs
+      command: multipass exec {{ item }} -- bash -c "echo '{{ ssh_pub_key }}' >> /home/ubuntu/.ssh/authorized_keys"
+      loop: "{{ multipass_instances | map(attribute='name') | list }}"
+
+    - name: Write dynamic inventory to file
+      copy:
+        dest: "{{ inventory_file }}"
+        content: |
+          [{{ cluster_name }}_master]
+          {{ multipass_ips[cluster_name ~ '-master'] }} ansible_user=ubuntu
+
+          [{{ cluster_name }}_workers]
+          {{ multipass_ips[cluster_name ~ '-worker1'] }} ansible_user=ubuntu
+          {{ multipass_ips[cluster_name ~ '-worker2'] }} ansible_user=ubuntu
+          {{ multipass_ips[cluster_name ~ '-worker3'] }} ansible_user=ubuntu
+
+          [{{ cluster_name }}_all:children]
+          {{ cluster_name }}_master
+          {{ cluster_name }}_workers
+
+          [all:vars]
+          ansible_ssh_private_key_file={{ lookup('env','HOME') + '/.ssh/id_rsa' }}
 
 - name: Common setup for all nodes
-  hosts: all
+  hosts: "{{ cluster_name }}_all"
   become: yes
   vars:
     k8s_version: "1.28"
     containerd_version: "1.7.2"
     pod_network_cidr: "10.244.0.0/16"
-  
   tasks:
     - name: Update apt cache
       apt:
         update_cache: yes
         cache_valid_time: 3600
-
     - name: Install required packages
       apt:
         name:
@@ -28,20 +82,17 @@
           - net-tools
           - htop
         state: present
-
     - name: Disable swap
       shell: |
         swapoff -a
         sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
       changed_when: false
-
     - name: Load kernel modules
       modprobe:
         name: "{{ item }}"
       loop:
         - overlay
         - br_netfilter
-
     - name: Add kernel modules to load at boot
       lineinfile:
         path: /etc/modules-load.d/k8s.conf
@@ -50,7 +101,6 @@
       loop:
         - overlay
         - br_netfilter
-
     - name: Configure sysctl for Kubernetes
       sysctl:
         name: "{{ item.name }}"
@@ -61,58 +111,48 @@
         - { name: 'net.bridge.bridge-nf-call-iptables', value: '1' }
         - { name: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
         - { name: 'net.ipv4.ip_forward', value: '1' }
-
     - name: Add Docker GPG key
       apt_key:
         url: https://download.docker.com/linux/ubuntu/gpg
         state: present
-
     - name: Add Docker repository
       apt_repository:
         repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
         state: present
-
     - name: Install containerd
       apt:
         name: containerd.io
         state: present
         update_cache: yes
-
     - name: Create containerd configuration directory
       file:
         path: /etc/containerd
         state: directory
         mode: '0755'
-
     - name: Generate default containerd configuration
       shell: containerd config default > /etc/containerd/config.toml
       args:
         creates: /etc/containerd/config.toml
-
     - name: Configure containerd to use systemd cgroup driver
       replace:
         path: /etc/containerd/config.toml
         regexp: 'SystemdCgroup = false'
         replace: 'SystemdCgroup = true'
-
     - name: Restart and enable containerd
       systemd:
         name: containerd
         state: restarted
         enabled: yes
         daemon_reload: yes
-
     - name: Add Kubernetes GPG key
       apt_key:
         url: https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/Release.key
         state: present
-
     - name: Add Kubernetes repository
       apt_repository:
         repo: "deb https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/ /"
         state: present
         filename: kubernetes
-
     - name: Install Kubernetes components
       apt:
         name:
@@ -121,7 +161,6 @@
           - kubectl
         state: present
         update_cache: yes
-
     - name: Hold Kubernetes packages at current version
       dpkg_selections:
         name: "{{ item }}"
@@ -130,26 +169,22 @@
         - kubelet
         - kubeadm
         - kubectl
-
     - name: Enable and start kubelet
       systemd:
         name: kubelet
         enabled: yes
         state: started
-
     - name: Configure kubelet to use correct cgroup driver
       lineinfile:
         path: /etc/default/kubelet
         line: 'KUBELET_EXTRA_ARGS=--cgroup-driver=systemd'
         create: yes
       notify: restart kubelet
-
     - name: Create .kube directory for root
       file:
         path: /root/.kube
         state: directory
         mode: '0755'
-
   handlers:
     - name: restart kubelet
       systemd:
@@ -157,28 +192,24 @@
         state: restarted
 
 - name: Initialize Kubernetes master node
-  hosts: master
+  hosts: "{{ cluster_name }}_master"
   become: yes
   vars:
     pod_network_cidr: "10.244.0.0/16"
-  
   tasks:
     - name: Check if Kubernetes is already initialized
       stat:
         path: /etc/kubernetes/admin.conf
       register: k8s_init_stat
-
     - name: Preflight check for container runtime
       command: crictl version
       environment:
         CONTAINER_RUNTIME_ENDPOINT: unix:///var/run/containerd/containerd.sock
       register: crictl_check
       failed_when: false
-
     - name: Display crictl status
       debug:
         msg: "Container runtime status: {{ crictl_check.stdout if crictl_check.rc == 0 else 'Failed: ' + crictl_check.stderr }}"
-
     - name: Initialize Kubernetes cluster
       shell: |
         kubeadm init \
@@ -189,7 +220,6 @@
           --v=5
       when: not k8s_init_stat.stat.exists
       register: kubeadm_init
-
     - name: Copy kubeconfig to root user
       copy:
         src: /etc/kubernetes/admin.conf
@@ -198,27 +228,23 @@
         owner: root
         group: root
         mode: '0644'
-
     - name: Generate join command for worker nodes
       shell: kubeadm token create --print-join-command
       register: join_command
       changed_when: false
-
     - name: Save join command to local file
       local_action:
         module: copy
         content: "{{ join_command.stdout_lines[0] }}"
-        dest: "./join-command.sh"
+        dest: "./{{ cluster_name }}-join-command.sh"
         mode: '0755'
       become: no
-
     - name: Install Flannel CNI plugin
       shell: |
         kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
       environment:
         KUBECONFIG: /root/.kube/config
       when: not k8s_init_stat.stat.exists
-
     - name: Wait for all system pods to be ready
       shell: kubectl get pods -n kube-system --no-headers | grep -v Running | wc -l
       environment:
@@ -230,37 +256,32 @@
       changed_when: false
 
 - name: Join worker nodes to cluster
-  hosts: workers
+  hosts: "{{ cluster_name }}_workers"
   become: yes
-  
   tasks:
     - name: Check if node is already part of cluster
       shell: kubectl get nodes | grep {{ ansible_hostname }} || true
-      delegate_to: "{{ groups['master'][0] }}"
+      delegate_to: "{{ groups[cluster_name + '_master'][0] }}"
       register: node_status
       changed_when: false
-
     - name: Copy join command to worker nodes
       copy:
-        src: "./join-command.sh"
+        src: "./{{ cluster_name }}-join-command.sh"
         dest: "/tmp/join-command.sh"
         mode: '0755'
       when: ansible_hostname not in node_status.stdout
-
     - name: Join worker nodes to cluster
       shell: bash /tmp/join-command.sh
       when: ansible_hostname not in node_status.stdout
       register: join_result
-
     - name: Clean up join command file
       file:
         path: /tmp/join-command.sh
         state: absent
 
 - name: Final cluster verification
-  hosts: master
+  hosts: "{{ cluster_name }}_master"
   become: yes
-  
   tasks:
     - name: Wait for all nodes to be ready
       shell: kubectl get nodes --no-headers | grep -v Ready | wc -l
@@ -271,29 +292,24 @@
       retries: 20
       delay: 15
       changed_when: false
-
     - name: Display cluster status
       shell: kubectl get nodes -o wide
       environment:
         KUBECONFIG: /root/.kube/config
       register: cluster_status
       changed_when: false
-
     - name: Show cluster information
       debug:
         msg: "{{ cluster_status.stdout_lines }}"
-
     - name: Display cluster info
       shell: kubectl cluster-info
       environment:
         KUBECONFIG: /root/.kube/config
       register: cluster_info
       changed_when: false
-
     - name: Show cluster info
       debug:
         msg: "{{ cluster_info.stdout_lines }}"
-
     - name: Create kubeconfig for regular user (optional)
       block:
         - name: Create user .kube directory
@@ -304,7 +320,6 @@
             group: "{{ ansible_user }}"
             mode: '0755'
           when: ansible_user != "root"
-
         - name: Copy kubeconfig to user directory
           copy:
             src: /etc/kubernetes/admin.conf
@@ -319,10 +334,11 @@
   hosts: localhost
   connection: local
   become: no
-  
+  vars:
+    cluster_name: "{{ cluster_name | default('k8scluster') }}"
   tasks:
     - name: Remove temporary join command file
       file:
-        path: "./join-command.sh"
+        path: "./{{ cluster_name }}-join-command.sh"
         state: absent
 
