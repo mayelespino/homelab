@@ -1,0 +1,9 @@
+services:
+  vscode-tunnel-server:
+    build: .
+    container_name: vscode-tunnel-python
+    hostname: vscode-tunnel-python
+    volumes:
+      - /home/mayel/DOCKER/DATA/python:/home/node
+    restart: unless-stopped
+    command: code tunnel --accept-server-license-terms
