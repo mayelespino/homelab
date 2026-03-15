@@ -10,5 +10,5 @@ docker-compose up -d --build  # rebuild (e.g. after Dockerfile changes)
 # How to authenticate to use the tunnel
 
 ```
-docker logs vscode-tunnel-python
+docker logs vscode-tunnel-golang
 ```

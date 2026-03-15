@@ -1,0 +1,9 @@
+services:
+  vscode-tunnel-rust:
+    build: .
+    container_name: vscode-tunnel-rust
+    hostname: vscode-tunnel-rust
+    volumes:
+      - /home/mayel/DOCKER/DATA/rust:/home/node/workspace
+    restart: unless-stopped
+    command: code tunnel --accept-server-license-terms --name vscode-tunnel-rust

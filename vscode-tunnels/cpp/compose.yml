@@ -1,0 +1,9 @@
+services:
+  vscode-tunnel-gcc:
+    build: .
+    container_name: vscode-tunnel-gcc
+    hostname: vscode-tunnel-gcc
+    volumes:
+      - /home/mayel/DOCKER/DATA/gcc:/home/node
+    restart: unless-stopped
+    command: code tunnel --accept-server-license-terms --name vscode-tunnel-gcc

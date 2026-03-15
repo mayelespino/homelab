@@ -1,0 +1,9 @@
+services:
+  vscode-tunnel-golang:
+    build: .
+    container_name: vscode-tunnel-golang
+    hostname: vscode-tunnel-golang
+    volumes:
+      - /home/mayel/DOCKER/DATA/golang:/home/node/workspace
+    restart: unless-stopped
+    command: code tunnel --accept-server-license-terms --name vscode-tunnel-golang
