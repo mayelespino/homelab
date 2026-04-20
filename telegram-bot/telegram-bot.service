@@ -1,0 +1,17 @@
+# /etc/systemd/system/telegram-bot.service
+[Unit]
+Description=Telegram Homelab Bot
+After=network.target
+
+[Service]
+ExecStart=/usr/local/pyenv/versions/3.14.3/bin/python /home/node/telegram_bot.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+
+#sudo systemctl daemon-reload
+#sudo systemctl enable --now telegram-bot
+#sudo systemctl status telegram-bot
