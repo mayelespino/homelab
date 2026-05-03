@@ -3,6 +3,8 @@ services:
     build: .
     container_name: vscode-tunnel-golang
     hostname: vscode-tunnel-golang
+    environment:
+      CGO_ENABLED: "1"
     volumes:
       - /home/mayel/DOCKER/DATA/golang:/home/node/workspace
     restart: unless-stopped
