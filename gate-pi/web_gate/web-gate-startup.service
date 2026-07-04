@@ -1,0 +1,10 @@
+[Unit]
+Description= Start Pingly tunnel for web-gate
+After=multi-user.target
+
+[Service]
+ExecStart=/home/pi/bin/start.sh
+Type=simple
+
+[Install]
+WantedBy=multi-user.target
