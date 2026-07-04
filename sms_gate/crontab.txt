@@ -1,0 +1,8 @@
+# m h  dom mon dow   command
+@reboot sudo mount /dev/sda1 /mnt/bookmarks/ -o uid=pi,gid=pi
+# run the sms gateway
+* * * * * /usr/bin/python3 /home/pi/gate-pi/sms_gate/sms_gate.py
+# maintenance to get rid of unwanted emails from gateway
+0 8 * * 0 echo 'd *' | mail -N
+# notify service has restarted
+@reboot /usr/bin/python3 /home/pi/gate-pi/sms_gate/sms_send.py
