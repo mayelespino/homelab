@@ -57,4 +57,15 @@ homelab/
 ├── speaker-pi/     # subtree: speaker controller
 ├── sensor-pi/      # subtree: sensor node
 ├── chaperon/       # subtree: check-in bot
-├── ansible/        # playbooks,
+├── ansible/        # playbooks, inventories, roles
+├── k8s/            # Kubernetes cluster automation
+└── README.md
+```
+
+## License
+
+See the individual project directories for their respective licenses.
+
+---
+
+*Maintained by [Mayel Espino](https://mayel.tech) · [GitHub](https://github.com/mayelespino)*
