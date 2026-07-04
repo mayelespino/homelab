@@ -1,0 +1,10 @@
+[Unit]
+Description=Speaker Flask App
+
+[Service]
+ExecStart=/home/pi/speaker-pi/source/start.sh
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target
